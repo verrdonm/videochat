@@ -30,14 +30,33 @@ impl P2pRoomService {
             let name = participant.name.clone();
             room.add_participant(participant).await;
 
-            tracing::debug!("added participant {room_code}");
-            // send peers message back to the joiner
+            tracing::debug!("added participant {name} to room {room_code}");
+            // // send peers message back to the joiner
             
-            let names = room.find_other_participant_names(&name).await;
-            room.message_participant(WebSocketMessage{recipient: name, payload: MessagePayload::Peers { names }}).await;
+            // let names = room.find_other_participant_names(&name).await;
+            // room.message_participant(WebSocketMessage{recipient: name, payload: MessagePayload::Peers { names }}).await;
         }
 
         Ok(())
+    }
+
+    pub async fn leave_room(&self, room_code: &str, name: &str) {
+        let mut writer = self.room_map.write().await;
+        if let Some(room) = writer.get_mut(room_code) {
+            room.remove_participant(name).await;
+        }
+    }
+
+    pub async fn send_room_peers(&self, room_code: &str, recipient: &str) {
+        let reader = self.room_map.read().await;
+        if let Some(room) = reader.get(room_code) {
+            tracing::debug!("Found room {room:?}");
+
+            // send peers message back to recipient
+            
+            let names = room.find_other_participant_names(recipient).await;
+            room.message_participant(WebSocketMessage{recipient: recipient.to_owned(), payload: MessagePayload::Peers { names }}).await;
+        }
     }
 
     pub async fn relay_message(&self, room_code: &str, message: WebSocketMessage) -> Result<(), Error> {
@@ -48,79 +67,6 @@ impl P2pRoomService {
         
         Ok(())
     }
-
-    // pub async fn handle_sdp_offer(&self, room: &str, name: &str, sdp: String) -> Result<(), Error> {
-    //     // set my offer, send other offers back to me
-    //     let mut writer = self.room_map.write().await;
-    //     tracing::debug!("handle sdp offer player {:?} in room {:?}", name, room);
-    //     if let Some(r) = writer.get_mut(room) {
-    //         for (other_name, participant) in r.participants.read().await.iter() {
-
-    //             if other_name != name {
-    //                 tracing::debug!("found other player {:?} in room {:?}", other_name, room);
-    //                 if let Some(other_sdp) = &participant.sdp {
-
-    //                     tracing::debug!("other player {:?} has sdp {:?}", other_name, room);
-    //                     r.message_participant(name, WsMessage::Offer { name: participant.name.clone(), sdp: other_sdp.clone() }).await;
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn handle_sdp_answer(&self, room: &str, sender_name: &str, recipient_name: &str, sdp: String) -> Result<(), Error> {
-    //     let mut writer = self.room_map.write().await;
-    //     tracing::debug!("handle sdp answer player {:?} in room {:?}, to player {:?}", sender_name, room, recipient_name);
-    //     if let Some(r) = writer.get_mut(room) {
-    //         // send answer to the corresponding offer's connections
-    //         r.message_participant(recipient_name, WsMessage::Answer { 
-    //             sender_name: sender_name.to_string(),
-    //             recipient_name: recipient_name.to_string(),
-    //             sdp }).await;
-
-    //         // // pull down candidates from that offer
-    //         // if let Some(recipient) = r.participants.read().await.get(recipient_name) {
-    //         //     for c in recipient.candidates.iter() {
-    //         //         let message = WsMessage::Candidate { 
-    //         //             sender_name: sender_name.to_string(),
-    //         //             candidate: c.to_string(),};
-    //         //         r.message_participant(sender_name, message).await;
-    //         //     }
-    //         // }
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn handle_candidate(&self, room: &str, sender_name: String, candidate: String) -> Result<(), Error> {
-
-    //     // rewriting. Candidates will be a simple relay
-
-    //     // let mut writer = self.room_map.write().await;
-
-    //     // if let Some(r) = writer.get_mut(room) {
-    //     //     let mut writable_participants = r.participants.write().await;
-    //     //     // save my candidates on my participant
-    //     //     if let Some(p) = writable_participants.get_mut(&sender_name) {
-    //     //         p.candidates.push(candidate.clone());
-    //     //     }
-
-    //     //     // send my candidate messages to other person (eventually people) in the room.
-    //     //     for (other_name, participant) in writable_participants.iter() {
-    //     //         if other_name != &sender_name {
-    //     //             tracing::debug!("found other player {:?} in room {:?}", other_name, room);
-    //     //             if participant.sdp.is_some() {
-    //     //                 tracing::debug!("other player {:?} has sdp {:?}", other_name, room);
-    //     //                 let message = WsMessage::Candidate { 
-    //     //                     sender_name: sender_name.clone(),
-    //     //                     candidate: candidate.clone(),};
-    //     //                 participant.send_message(message).await;
-    //     //             }
-    //     //         }
-    //     //     }
-    //     // }
-    //     Ok(())
-    // }
 
 }
 
@@ -144,6 +90,12 @@ impl P2pRoom {
         if !write_lock.contains_key(&participant.name) {
             write_lock.insert(participant.name.clone(), participant);
         }
+    }
+
+    pub async fn remove_participant(&mut self, name: &str) {
+        tracing::info!("adding participant in room for participant {name}");
+        let mut write_lock = self.participants.write().await;
+        write_lock.remove(name);
     }
 
     pub async fn message_participant(&self, message: WebSocketMessage) {
@@ -192,9 +144,12 @@ impl Participant {
     }
 
     async fn send_message(&self, message: WebSocketMessage) {
-        tracing::debug!("Sending to player {:?} message {:?}", self.name, message);
         let mut sender = self.sender.lock().await;
         let msg = serde_json::to_string(&message).unwrap_or("{}".to_string());
-        let _ = sender.send(Message::Text(msg)).await;
+        tracing::debug!("Sending to player {:?} message {:?}", self.name, message);
+        match sender.send(Message::Text(msg)).await {
+            Ok(()) => (),
+            Err(e) => tracing::warn!("Failed to send message to {}, error: {}", self.name, e),
+        }
     }
 }

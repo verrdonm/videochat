@@ -5,6 +5,7 @@ use axum::{
 use futures::stream::StreamExt;
 use std::{ops::ControlFlow, sync::Arc};
 use serde::{Deserialize, Serialize};
+use tokio::time::{self, Duration, Instant};
 use crate::service::{P2pRoomService, Participant};
 
 impl FromRef<AppState> for Arc<P2pRoomService> {
@@ -74,6 +75,7 @@ pub enum MessagePayload {
     Answer{sender: String, payload: String},
     Candidate{sender: String, payload: String},
     Peers{names: Vec<String>},
+    Echo{message: String},
 }
 
 // user_agent: Option<TypedHeader<headers::UserAgent>>,
@@ -93,27 +95,38 @@ pub async fn ws_handler(
 }
 //who: SocketAddr, 
 /// Actual websocket statemachine (one will be spawned per connection)
-async fn handle_socket(socket: WebSocket, room: String, name: String, room_service: Arc<P2pRoomService>) {
+async fn handle_socket(mut socket: WebSocket, room: String, name: String, room_service: Arc<P2pRoomService>) {
+    // Send a ping and wait for a response to make sure we're open
+    if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
+        tracing::info!("Pinged {name}...");
+    } else {
+        tracing::info!("Could not send ping {name}!");
+        return;
+    }
+
+
     let (sender, mut receiver) = socket.split();
 
-    tracing::debug!("joining room: {name}");
+    tracing::debug!("joining room: {room}");
     let _  = room_service.join_room(&room, Participant::new(name.clone(), sender)).await;
-
+    let room_service_clone = room_service.clone();
     tracing::info!("joined room, starting receive task: {name}");
     // This second task will receive messages from client and process them
     let name_clone = name.clone();
+    let room_clone = room.clone();
     let mut recv_task = tokio::spawn(async move {
         let mut cnt = 0;
         while let Some(Ok(msg)) = receiver.next().await {
             cnt += 1;
-            if process_message(msg, &room, &name_clone, room_service.clone()).await.is_break() {
-                // TODO room_service.leave_room(&room, &name_clone).await;
+            if process_message(msg, &room_clone, &name_clone, room_service_clone.clone()).await.is_break() {
+                room_service_clone.leave_room(&room_clone, &name_clone).await;
                 break;
             }
         }
         cnt
     });
-
+    sleep(Duration::from_secs(3)).await;
+    room_service.send_room_peers(&room, &name).await;
     // This holds the task open until it completes
     tokio::select! {
         rv_b = (&mut recv_task) => {
@@ -138,7 +151,7 @@ async fn process_message(msg: Message, room: &str, name: &str, room_service: Arc
                     // could otherwise match on message.payload
                     let _ = room_service.relay_message(room, message).await;
                 }
-                Err(e) => tracing::info!("failed to parse message as WsMessage: {e}"),
+                Err(e) => tracing::info!("failed to parse message: {e}"),
             }
         }
         Message::Close(c) => {
@@ -155,4 +168,17 @@ async fn process_message(msg: Message, room: &str, name: &str, room_service: Arc
         _m => {}
     }
     ControlFlow::Continue(())
+}
+
+async fn sleep(dur: Duration) {
+    let sleep = time::sleep(dur);
+    tokio::pin!(sleep);
+
+    loop {
+        tokio::select! {
+            () = &mut sleep => {
+                return;
+            },
+        }
+    }
 }

@@ -14,8 +14,6 @@ textarea {
     <span>room<input type="text" name="Room" id="room" value="r1"/></span>
     <button id="startButton">Join</button>
     <button id="hangupButton">Hang Up</button>
-
-    <button id="forceOffer">Offer</button>
   </div>
 
   <div id="chatbox"></div>
@@ -38,13 +36,15 @@ const nameInput = document.getElementById('name');
 const roomInput = document.getElementById('room');
 
 let peers = {};
+let peerOffers = {};
 let name;
 let offer;
 let localStream;
 let ws;
 
 signal = (recipient, msg) => {
-  ws.send(JSON.stringify({"recipient": recipient, msg}));
+  console.log(`sending message to ${recipient}: ${JSON.stringify(msg)}`);
+  ws.send(JSON.stringify({"recipient": recipient, "payload": msg}));
 };
 
 startButton.onclick = async () => {
@@ -62,37 +62,40 @@ startButton.onclick = async () => {
   ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${name}`);
 
   // ws = new WebSocket(`wss://localhost:7878/ws/${roomCode}/${name}`);
-  while(ws.readyState != WebSocket.OPEN) {
-    await new Promise(r => setTimeout(r, 1000));
-  }
+  await waitForOpen();
+  signal(name, {"echo": {"message": "hello"}});
   ws.onmessage = async (event) => {
     console.log(event);
     let text = event;
     try {
+      console.log(`Received: ${event.data}`);
       const msg = JSON.parse(event.data);
-
-      if (msg.peers) {
-        msg.peers.names.forEach(async (name) => {
-          var pc = await createPeerConnection(name);
+      let payload = msg.payload;
+      if (payload.peers) {
+        payload.peers.names.forEach(async (peerName) => {
+          var pc = await createPeerConnection(peerName);
           offer = await pc.createOffer();
+          // peerOffers[peerName] = offer;
           await pc.setLocalDescription(offer);
-          signal(name, {"offer":{"sender":name, "payload": btoa(JSON.stringify(offer))}});
+          signal(peerName, {"offer":{"sender":name, "payload": btoa(JSON.stringify(offer))}});
         });
 
-      } else if (msg.offer) {
-        let rdJson = atob(msg.offer.payload);
+      } else if (payload.offer) {
+        let rdJson = atob(payload.offer.payload);
         // console.log(`received remote description ${rdJson}`);
 
-        var pc = await createPeerConnection(msg.offer.sender);
+        var pc = await createPeerConnection(payload.offer.sender);
         await pc.setRemoteDescription(JSON.parse(rdJson));
         let answer = await pc.createAnswer();
-        console.log(`sending answer to ${msg.offer.name}: ${JSON.stringify(answer)}`);
-        signal(msg.offer.sender, {"answer":{"sender":name, "payload": btoa(JSON.stringify(answer))}});
+        console.log(`sending answer to ${payload.offer.sender}: ${JSON.stringify(answer)}`);
+        signal(payload.offer.sender, {"answer":{"sender":name, "payload": btoa(JSON.stringify(answer))}});
         await pc.setLocalDescription(answer);
-      } else if(msg.answer) {
-        await peers[msg.answer.sender].setRemoteDescription(JSON.parse(atob(msg.answer.sdp)));
-      } else if(msg.candidate) {
-        var pc = peers[msg.candidate.sender];
+      } else if(payload.answer) {
+        var peerName = payload.answer.sender;
+        await peers[peerName].setRemoteDescription(JSON.parse(atob(payload.answer.payload)));
+        // await pc.setLocalDescription(peerOffers[peerName]);
+      } else if(payload.candidate) {
+        var pc = peers[payload.candidate.sender];
         if (!pc) {
           // console.error('no peerconnection');
           return;
@@ -101,10 +104,10 @@ startButton.onclick = async () => {
         // or at least cap the wait before we get the answer
         while(!pc.remoteDescription) {
           await new Promise(r => setTimeout(r, 100));
-          pc = peers[msg.candidate.sender];
+          pc = peers[payload.candidate.sender];
         }
         
-        await pc.addIceCandidate(JSON.parse(atob(msg.candidate.payload)));
+        await pc.addIceCandidate(JSON.parse(atob(payload.candidate.payload)));
       }
     } catch (e) {
       console.log("failed to parse event data: ", e);
@@ -117,23 +120,31 @@ hangupButton.onclick = async () => {
 };
 
 async function hangup() {
-  if (pc) {
-    pc.close();
-    pc = null;
-  }
-  localStream.getTracks().forEach(track => track.stop());
-  localStream = null;
+  Object.entries(peers).forEach((n, pc) => {
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+    let removeVideo = document.getElementById('remoteVideo' + n);
+    if (removeVideo) {
+      removeVideo.remove();
+    }
+    // remoteVideos.removeChild(removeVideo);
+  });
+  
   startButton.disabled = false;
   hangupButton.disabled = true;
   nameInput.disabled = false;
   roomInput.disabled = false;
-
+  localStream.getTracks().forEach(track => track.stop());
+  localStream = null;
   if (ws) {
     ws.close();
   }
 };
 
 async function createPeerConnection(peerName) {
+  console.log(`creating peer connection with ${peerName}`);
   // pc = new RTCPeerConnection();
   var pc = new RTCPeerConnection({
     iceServers: [
@@ -148,32 +159,30 @@ async function createPeerConnection(peerName) {
     ]});
   pc.onicecandidate = async e => {
     if (e.candidate) {
-      const message = {
-        sender_name: name,
-        candidate: btoa(JSON.stringify(e.candidate)),
-      };
       if (!(ws && ws.readyState == WebSocket.OPEN)) {
-        while(!(ws && ws.readyState == WebSocket.OPEN)) {
-          await new Promise(r => setTimeout(r, 1000));
-        }
+        await waitForOpen();
       }
-      if (ws && ws.readyState == WebSocket.OPEN) {
-        console.log(`sending candidate info ${stringMsg}`);
-        signal(peerName, {"sender": name, "payload": btoa(JSON.stringify(e.candidate))});
-      }
+      signal(peerName, {"candidate": {"sender": name, "payload": btoa(JSON.stringify(e.candidate))}});
     }
   };
 
-
-  var videoElement = document.createElement('remoteVideo' + peerName);
+  var videoElement = document.createElement('video');
+  videoElement.id = 'remoteVideo' + peerName;
   videoElement.playsInline = true;
   videoElement.autoplay = true;
   remoteVideos.appendChild(videoElement);
 
   pc.ontrack = e => videoElement.srcObject = e.streams[0];
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  peers[name] = pc;
+  peers[peerName] = pc;
   return pc;
+}
+
+async function waitForOpen() {
+  while(!(ws && ws.readyState == WebSocket.OPEN)) {
+    console.log(`waiting for WebSocket.OPEN`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
 }
 
 </script>
