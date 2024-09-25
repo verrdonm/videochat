@@ -1,9 +1,8 @@
 use axum::{
-    extract::{FromRef, ws::{Message, WebSocket, WebSocketUpgrade}, ConnectInfo, Path, State}, http::StatusCode, response::{IntoResponse, Response},
+    extract::{FromRef, ws::{Message, WebSocket, WebSocketUpgrade}, Path, State}, http::StatusCode, response::{IntoResponse, Response},
 };
-use axum_extra::{headers, TypedHeader};
 use futures::stream::StreamExt;
-use std::{net::SocketAddr, ops::ControlFlow, sync::Arc};
+use std::{ops::ControlFlow, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 

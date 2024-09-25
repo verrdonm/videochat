@@ -1,5 +1,4 @@
 mod service;
-mod util;
 pub mod handlers;
 
 pub use handlers::AppState;

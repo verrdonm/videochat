@@ -1,16 +1,13 @@
 use axum::{
     body::Bytes,
-    extract::{Host, MatchedPath},
-    handler::HandlerWithoutStateExt,
-    http::{HeaderMap, Request, StatusCode, Uri},
-    response::{Html, Redirect, Response},
+    extract::MatchedPath,
+    http::{HeaderMap, Request, Response},
+    response::Html,
     routing::get,
-    BoxError,
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use askama_axum::Template;
-use rustls::{crypto::CryptoProvider, ServerConfig};
 use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 use tracing::{info_span, Span};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -28,8 +25,6 @@ async fn main() {
     tracing_subscriber::registry()
     .with(
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            // axum logs rejections from built-in extractors with the `axum::rejection`
-            // target, at `TRACE` level. `axum::rejection=trace` enables showing those events
             format!(
                 "{}=debug,tower_http=debug,axum::rejection=trace",
                 env!("CARGO_CRATE_NAME")
@@ -44,6 +39,7 @@ async fn main() {
         http: 3000,
         https: 7878,
     };
+
     rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls crypto provider");
     // CryptoProvider::install_default();
     let config = RustlsConfig::from_pem_file(
@@ -90,7 +86,7 @@ async fn main() {
                     // closures to attach a value to the initially empty field in the info_span
                     // created above.
                 })
-                .on_response(|_response: &Response, _latency: Duration, _span: &Span| {
+                .on_response(|_response: &Response<_>, _latency: Duration, _span: &Span| {
                     // ...
                 })
                 .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
@@ -107,8 +103,6 @@ async fn main() {
                     },
                 ),
         );
-    // let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    // axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 
     // run https server
     let addr = SocketAddr::from(([0, 0, 0, 0], ports.https));
@@ -134,40 +128,11 @@ struct Ports {
 
 #[allow(dead_code)]
 async fn redirect_http_to_https(ports: Ports) {
-    // TODO was getting infinite redirect, so just host root on the http port. It won't work on that port anyway.
-
-    // fn make_https(host: String, uri: Uri, ports: Ports) -> Result<Uri, BoxError> {
-    //     let mut parts = uri.into_parts();
-
-    //     parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
-
-    //     if parts.path_and_query.is_none() {
-    //         parts.path_and_query = Some("/".parse().unwrap());
-    //     }
-
-    //     let https_host = host.replace(&ports.http.to_string(), &ports.https.to_string());
-    //     parts.authority = Some(https_host.parse()?);
-
-    //     Ok(Uri::from_parts(parts)?)
-    // }
-
-    // let redirect = move |Host(host): Host, uri: Uri| async move {
-    //     match make_https(host, uri, ports) {
-    //         Ok(uri) => Ok(Redirect::permanent(&uri.to_string())),
-    //         Err(error) => {
-    //             tracing::warn!(%error, "failed to convert URI to HTTPS");
-    //             Err(StatusCode::BAD_REQUEST)
-    //         }
-    //     }
-    // };
+    // was getting infinite redirect, so just host root on the http port. It won't work on that port anyway.
+    // I'm using cloudflare for DNS, and it manages the redirect to https for me. This is here
+    // because without a listener on port 80 at all, cloudflare thought the site was down.
 
     let addr = SocketAddr::from(([0, 0, 0, 0], ports.http));
-    // let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    // tracing::debug!("listening on {}", listener.local_addr().unwrap());
-    // axum::serve(listener, redirect.into_make_service())
-    //     .await
-    //     .unwrap();
-
 
     let app = Router::new().route("/", get(root));
 

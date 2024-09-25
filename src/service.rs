@@ -6,7 +6,6 @@ use tokio::sync::{Mutex, RwLock};
 use crate::handlers::WsMessage;
 
 pub struct P2pRoomService {
-    // RWLock Map of rooms by string id
     room_map: RwLock<HashMap<String, P2pRoom>>,
 }
 
@@ -21,7 +20,7 @@ impl P2pRoomService {
         tracing::info!("got writer lock for {room_code}");
         // create room is does not exist
         if !writer.contains_key(room_code) {
-            writer.insert(room_code.to_owned(), P2pRoom::new(room_code.to_owned()));
+            writer.insert(room_code.to_owned(), P2pRoom::new());
         }
 
         tracing::info!("adding participant {room_code}");
@@ -111,14 +110,12 @@ impl P2pRoomService {
 
 #[derive(Debug)]
 pub struct P2pRoom {
-    pub room_code: String,
     participants: RwLock<HashMap<String, Participant>>,
 }
 
 impl P2pRoom {
-    pub fn new(room_code: String) -> Self {
+    pub fn new() -> Self {
         Self{
-            room_code,
             participants: RwLock::new(HashMap::new()),
         }
     }
