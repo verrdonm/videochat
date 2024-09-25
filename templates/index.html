@@ -7,9 +7,8 @@ textarea {
 </style>
 
 <div id="container">
+  <div id="remotePeers"></div>
   <video id="localVideo" playsinline autoplay muted></video>
-  <video id="remoteVideo" playsinline autoplay></video>
-
   <div class="box">
     <span>name<input type="text" name="Name" id="name"/></span>
     <span>room<input type="text" name="Room" id="room" value="r1"/></span>
@@ -29,21 +28,24 @@ textarea {
 
 const startButton = document.getElementById('startButton');
 const hangupButton = document.getElementById('hangupButton');
-const offerButton = document.getElementById('forceOffer');
 
 hangupButton.disabled = true;
 
+const remoteVideos = document.getElementById('remotePeers');
 const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
 
 const nameInput = document.getElementById('name');
 const roomInput = document.getElementById('room');
 
-let pc;
+let peers = {};
 let name;
 let offer;
 let localStream;
 let ws;
+
+signal = (recipient, msg) => {
+  ws.send(JSON.stringify({"recipient": recipient, msg}));
+};
 
 startButton.onclick = async () => {
   localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
@@ -56,39 +58,53 @@ startButton.onclick = async () => {
   let roomCode = roomInput.value;
   nameInput.disabled = true;
   roomInput.disabled = true;
-  await createPeerConnection();
 
-  offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
   ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${name}`);
+
+  // ws = new WebSocket(`wss://localhost:7878/ws/${roomCode}/${name}`);
   while(ws.readyState != WebSocket.OPEN) {
     await new Promise(r => setTimeout(r, 1000));
   }
-  ws.send(JSON.stringify({"offer":{"name":name, "sdp": btoa(JSON.stringify(offer))}}));
   ws.onmessage = async (event) => {
     console.log(event);
     let text = event;
     try {
       const msg = JSON.parse(event.data);
 
-      // TODO populate name fields
-      if (msg.offer) {
-        let rdJson = atob(msg.offer.sdp);
+      if (msg.peers) {
+        msg.peers.names.forEach(async (name) => {
+          var pc = await createPeerConnection(name);
+          offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          signal(name, {"offer":{"sender":name, "payload": btoa(JSON.stringify(offer))}});
+        });
+
+      } else if (msg.offer) {
+        let rdJson = atob(msg.offer.payload);
         // console.log(`received remote description ${rdJson}`);
-        await createPeerConnection();
+
+        var pc = await createPeerConnection(msg.offer.sender);
         await pc.setRemoteDescription(JSON.parse(rdJson));
         let answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
         console.log(`sending answer to ${msg.offer.name}: ${JSON.stringify(answer)}`);
-        ws.send(JSON.stringify({"answer":{"senderName":name, "recipientName":msg.offer.name, "sdp": btoa(JSON.stringify(answer))}}));
+        signal(msg.offer.sender, {"answer":{"sender":name, "payload": btoa(JSON.stringify(answer))}});
+        await pc.setLocalDescription(answer);
       } else if(msg.answer) {
-        await pc.setRemoteDescription(JSON.parse(atob(msg.answer.sdp)));
+        await peers[msg.answer.sender].setRemoteDescription(JSON.parse(atob(msg.answer.sdp)));
       } else if(msg.candidate) {
-        if (!pc || !pc.remoteDescription) {
+        var pc = peers[msg.candidate.sender];
+        if (!pc) {
           // console.error('no peerconnection');
           return;
         }
-        await pc.addIceCandidate(JSON.parse(atob(msg.candidate.candidate)));
+        // DANGER, probably. We can queue these on the server
+        // or at least cap the wait before we get the answer
+        while(!pc.remoteDescription) {
+          await new Promise(r => setTimeout(r, 100));
+          pc = peers[msg.candidate.sender];
+        }
+        
+        await pc.addIceCandidate(JSON.parse(atob(msg.candidate.payload)));
       }
     } catch (e) {
       console.log("failed to parse event data: ", e);
@@ -117,9 +133,9 @@ async function hangup() {
   }
 };
 
-async function createPeerConnection() {
+async function createPeerConnection(peerName) {
   // pc = new RTCPeerConnection();
-  pc = new RTCPeerConnection({
+  var pc = new RTCPeerConnection({
     iceServers: [
       {
         urls: 'turn:meet.verrdon.com:3478',
@@ -142,14 +158,22 @@ async function createPeerConnection() {
         }
       }
       if (ws && ws.readyState == WebSocket.OPEN) {
-        let stringMsg = JSON.stringify({"candidate":message});
         console.log(`sending candidate info ${stringMsg}`);
-        ws.send(stringMsg);
+        signal(peerName, {"sender": name, "payload": btoa(JSON.stringify(e.candidate))});
       }
     }
   };
-  pc.ontrack = e => remoteVideo.srcObject = e.streams[0];
+
+
+  var videoElement = document.createElement('remoteVideo' + peerName);
+  videoElement.playsInline = true;
+  videoElement.autoplay = true;
+  remoteVideos.appendChild(videoElement);
+
+  pc.ontrack = e => videoElement.srcObject = e.streams[0];
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  peers[name] = pc;
+  return pc;
 }
 
 </script>
