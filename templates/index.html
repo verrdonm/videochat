@@ -1,0 +1,155 @@
+
+<style>
+textarea {
+    width: 500px;
+    min-height: 75px;
+}
+</style>
+
+<div id="container">
+  <video id="localVideo" playsinline autoplay muted></video>
+  <video id="remoteVideo" playsinline autoplay></video>
+
+  <div class="box">
+    <span>name<input type="text" name="Name" id="name"/></span>
+    <span>room<input type="text" name="Room" id="room" value="r1"/></span>
+    <button id="startButton">Join</button>
+    <button id="hangupButton">Hang Up</button>
+
+    <button id="forceOffer">Offer</button>
+  </div>
+
+  <div id="chatbox"></div>
+
+</div>
+
+
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+<script>
+
+const startButton = document.getElementById('startButton');
+const hangupButton = document.getElementById('hangupButton');
+const offerButton = document.getElementById('forceOffer');
+
+hangupButton.disabled = true;
+
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+
+const nameInput = document.getElementById('name');
+const roomInput = document.getElementById('room');
+
+let pc;
+let name;
+let offer;
+let localStream;
+let ws;
+
+startButton.onclick = async () => {
+  localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+  localVideo.srcObject = localStream;
+
+  startButton.disabled = true;
+  hangupButton.disabled = false;
+
+  name = nameInput.value;
+  let roomCode = roomInput.value;
+  nameInput.disabled = true;
+  roomInput.disabled = true;
+  await createPeerConnection();
+
+  offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${name}`);
+  while(ws.readyState != WebSocket.OPEN) {
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  ws.send(JSON.stringify({"offer":{"name":name, "sdp": btoa(JSON.stringify(offer))}}));
+  ws.onmessage = async (event) => {
+    console.log(event);
+    let text = event;
+    try {
+      const msg = JSON.parse(event.data);
+
+      // TODO populate name fields
+      if (msg.offer) {
+        let rdJson = atob(msg.offer.sdp);
+        // console.log(`received remote description ${rdJson}`);
+        await createPeerConnection();
+        await pc.setRemoteDescription(JSON.parse(rdJson));
+        let answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log(`sending answer to ${msg.offer.name}: ${JSON.stringify(answer)}`);
+        ws.send(JSON.stringify({"answer":{"senderName":name, "recipientName":msg.offer.name, "sdp": btoa(JSON.stringify(answer))}}));
+      } else if(msg.answer) {
+        await pc.setRemoteDescription(JSON.parse(atob(msg.answer.sdp)));
+      } else if(msg.candidate) {
+        if (!pc || !pc.remoteDescription) {
+          // console.error('no peerconnection');
+          return;
+        }
+        await pc.addIceCandidate(JSON.parse(atob(msg.candidate.candidate)));
+      }
+    } catch (e) {
+      console.log("failed to parse event data: ", e);
+    }
+  };
+};
+
+hangupButton.onclick = async () => {
+  hangup();
+};
+
+async function hangup() {
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  localStream.getTracks().forEach(track => track.stop());
+  localStream = null;
+  startButton.disabled = false;
+  hangupButton.disabled = true;
+  nameInput.disabled = false;
+  roomInput.disabled = false;
+
+  if (ws) {
+    ws.close();
+  }
+};
+
+async function createPeerConnection() {
+  // pc = new RTCPeerConnection();
+  pc = new RTCPeerConnection({
+    iceServers: [
+      {
+        urls: 'turn:meet.verrdon.com:3478',
+        username: "barfolomew",
+        credential: "thatsgoingtoleaveamark"
+      },
+      {
+        urls: 'stun:stun.l.google.com:19302'
+      }
+    ]});
+  pc.onicecandidate = async e => {
+    if (e.candidate) {
+      const message = {
+        sender_name: name,
+        candidate: btoa(JSON.stringify(e.candidate)),
+      };
+      if (!(ws && ws.readyState == WebSocket.OPEN)) {
+        while(!(ws && ws.readyState == WebSocket.OPEN)) {
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      if (ws && ws.readyState == WebSocket.OPEN) {
+        let stringMsg = JSON.stringify({"candidate":message});
+        console.log(`sending candidate info ${stringMsg}`);
+        ws.send(stringMsg);
+      }
+    }
+  };
+  pc.ontrack = e => remoteVideo.srcObject = e.streams[0];
+  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+}
+
+</script>
