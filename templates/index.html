@@ -8,11 +8,12 @@ textarea {
 
 <div id="container">
   <div id="remotePeers"></div>
-  <video id="localVideo" playsinline autoplay muted></video>
+  <video id="localVideo" playsinline autoplay muted style="transform: scale(-1, 1); -webkit-transform: scale(-1, 1);"></video>
   <div class="box">
     <span>name<input type="text" name="Name" id="name"/></span>
     <span>room<input type="text" name="Room" id="room" value="r1"/></span>
     <button id="startButton">Join</button>
+    <button id="muteButton">Mute</button>
     <button id="hangupButton">Hang Up</button>
   </div>
 
@@ -24,8 +25,32 @@ textarea {
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
 
+const IceStats = class {
+  constructor() {
+    this.sent = 0;
+    this.received = 0;
+  }
+
+  incSent() {
+    this.sent++;
+  }
+
+  incReceived() {
+    this.received++;
+  }
+}
+
+const Peer = class {
+  constructor(name, pc, ice) {
+    this.name = name;
+    this.pc = pc;
+    this.ice = ice;
+  }
+}
+
 const startButton = document.getElementById('startButton');
 const hangupButton = document.getElementById('hangupButton');
+const muteButton = document.getElementById('muteButton');
 
 hangupButton.disabled = true;
 
@@ -36,7 +61,6 @@ const nameInput = document.getElementById('name');
 const roomInput = document.getElementById('room');
 
 let peers = {};
-let peerOffers = {};
 let name;
 let offer;
 let localStream;
@@ -65,7 +89,6 @@ startButton.onclick = async () => {
   await waitForOpen();
   signal(name, {"echo": {"message": "hello"}});
   ws.onmessage = async (event) => {
-    console.log(event);
     let text = event;
     try {
       console.log(`Received: ${event.data}`);
@@ -73,41 +96,34 @@ startButton.onclick = async () => {
       let payload = msg.payload;
       if (payload.peers) {
         payload.peers.names.forEach(async (peerName) => {
+          if (peers[peerName]) return;
           var pc = await createPeerConnection(peerName);
           offer = await pc.createOffer();
-          // peerOffers[peerName] = offer;
           await pc.setLocalDescription(offer);
           signal(peerName, {"offer":{"sender":name, "payload": btoa(JSON.stringify(offer))}});
         });
-
       } else if (payload.offer) {
-        let rdJson = atob(payload.offer.payload);
-        // console.log(`received remote description ${rdJson}`);
+        if (peers[payload.offer.sender]) {return;}
 
         var pc = await createPeerConnection(payload.offer.sender);
-        await pc.setRemoteDescription(JSON.parse(rdJson));
+        await pc.setRemoteDescription(JSON.parse(atob(payload.offer.payload)));
         let answer = await pc.createAnswer();
-        console.log(`sending answer to ${payload.offer.sender}: ${JSON.stringify(answer)}`);
         signal(payload.offer.sender, {"answer":{"sender":name, "payload": btoa(JSON.stringify(answer))}});
         await pc.setLocalDescription(answer);
       } else if(payload.answer) {
         var peerName = payload.answer.sender;
-        await peers[peerName].setRemoteDescription(JSON.parse(atob(payload.answer.payload)));
-        // await pc.setLocalDescription(peerOffers[peerName]);
+        await peers[peerName].pc.setRemoteDescription(JSON.parse(atob(payload.answer.payload)));
       } else if(payload.candidate) {
-        var pc = peers[payload.candidate.sender];
+        var peer = peers[payload.candidate.sender];
+        var pc = peer.pc;
         if (!pc) {
-          // console.error('no peerconnection');
           return;
         }
-        // DANGER, probably. We can queue these on the server
-        // or at least cap the wait before we get the answer
         while(!pc.remoteDescription) {
-          await new Promise(r => setTimeout(r, 100));
-          pc = peers[payload.candidate.sender];
+          await new Promise(r => setTimeout(r, 100))
         }
-        
         await pc.addIceCandidate(JSON.parse(atob(payload.candidate.payload)));
+        peer.ice.incReceived();
       }
     } catch (e) {
       console.log("failed to parse event data: ", e);
@@ -120,18 +136,24 @@ hangupButton.onclick = async () => {
 };
 
 async function hangup() {
-  Object.entries(peers).forEach((n, pc) => {
-    if (pc) {
+  Object.entries(peers).forEach((n, peer) => {
+    console.log(`hanging up ${n} connection ${peer}`);
+    if (peer && peer.pc) {
+      var pc = peer.pc;
+      pc.getSenders().forEach((sender) => {
+        sender.track.stop();
+      });
       pc.close();
       pc = null;
     }
-    let removeVideo = document.getElementById('remoteVideo' + n);
-    if (removeVideo) {
-      removeVideo.remove();
+    let v = document.getElementById('remoteVideo' + n);
+    if (v) {
+      v.remove();
     }
     // remoteVideos.removeChild(removeVideo);
   });
-  
+  peers = {};
+  remoteVideos.innerHTML="";
   startButton.disabled = false;
   hangupButton.disabled = true;
   nameInput.disabled = false;
@@ -157,32 +179,54 @@ async function createPeerConnection(peerName) {
         urls: 'stun:stun.l.google.com:19302'
       }
     ]});
+  var peer = new Peer(peerName, pc, new IceStats());
+
   pc.onicecandidate = async e => {
+
+    console.log(`onicecandidate e: ${JSON.stringify()}`);
     if (e.candidate) {
-      if (!(ws && ws.readyState == WebSocket.OPEN)) {
-        await waitForOpen();
+      await waitForOpen();
+      console.log(JSON.stringify(pc));
+      while(!pc.remoteDescription) {
+        console.log(`waiting for remote description in onicecandidate: ${pc.remoteDescription}`);
+        await new Promise(r => setTimeout(r, 400));
       }
-      signal(peerName, {"candidate": {"sender": name, "payload": btoa(JSON.stringify(e.candidate))}});
+      signal(peer.name, {"candidate": {"sender": name, "payload": btoa(JSON.stringify(e.candidate))}});
+      peer.ice.incSent();
     }
   };
+  var videoElementId = 'remoteVideo' + peerName;
+  var videoElement = document.getElementById(videoElementId);
 
-  var videoElement = document.createElement('video');
-  videoElement.id = 'remoteVideo' + peerName;
-  videoElement.playsInline = true;
-  videoElement.autoplay = true;
-  remoteVideos.appendChild(videoElement);
+  if (!videoElement) {
+    var videoElement = document.createElement('video');
+    videoElement.id = 'remoteVideo' + peerName;
+    videoElement.playsInline = true;
+    videoElement.autoplay = true;
+    remoteVideos.appendChild(videoElement);
+  }
 
-  pc.ontrack = e => videoElement.srcObject = e.streams[0];
+  pc.ontrack = e => {
+    console.log(`on track: ${JSON.stringify(e)}`);
+    videoElement.srcObject = e.streams[0];
+  };
+
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  peers[peerName] = pc;
+  peers[peerName] = peer;
   return pc;
 }
 
 async function waitForOpen() {
   while(!(ws && ws.readyState == WebSocket.OPEN)) {
     console.log(`waiting for WebSocket.OPEN`);
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 200));
   }
 }
 
+muteButton.onclick = () => mute();
+
+function mute() {
+  muteButton.innerText = localStream.getAudioTracks()[0].enabled ? "Unmute" : "Mute";
+  localStream.getAudioTracks()[0].enabled=!localStream.getAudioTracks()[0].enabled;
+}
 </script>
