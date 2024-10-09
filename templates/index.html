@@ -4,6 +4,20 @@ textarea {
     width: 500px;
     min-height: 75px;
 }
+
+progress {
+  width: calc(100% - 8.5em);
+}
+
+div.progress, div#bitrate {
+  margin: 0 0 1em 0;
+}
+
+div.progress div.label {
+  display: inline-block;
+  font-weight: 400;
+  width: 8.2em;
+}
 </style>
 
 <div id="container">
@@ -15,6 +29,28 @@ textarea {
     <button id="startButton">Join</button>
     <button id="muteButton">Mute</button>
     <button id="hangupButton">Hang Up</button>
+  </div>
+  <div class="sendFile">
+    <!-- <form id="fileInfo"> -->
+      <input type="file" id="fileInput"/>
+    <!-- </form> -->
+    <button disabled id="sendFile">Send</button>
+    <button disabled id="abortButton">Abort</button>
+
+
+    <div class="progress">
+      <div class="label">Send progress: </div>
+      <progress id="sendProgress" max="0" value="0"></progress>
+    </div>
+
+    <div class="progress">
+      <div class="label">Receive progress: </div>
+      <progress id="receiveProgress" max="0" value="0"></progress>
+    </div>
+
+    <div id="bitrate"></div>
+    <a id="download"></a>
+    <span id="status"></span>
   </div>
 
   <div id="chatbox"></div>
@@ -41,10 +77,12 @@ const IceStats = class {
 }
 
 const Peer = class {
-  constructor(name, pc, ice) {
+  constructor(name, pc, ice, dataChannel, fileInfo) {
     this.name = name;
     this.pc = pc;
     this.ice = ice;
+    this.dataChannel = dataChannel;
+    this.fileInfo = fileInfo;
   }
 }
 
@@ -61,7 +99,7 @@ const nameInput = document.getElementById('name');
 const roomInput = document.getElementById('room');
 
 let peers = {};
-let name;
+let myName;
 let offer;
 let localStream;
 let ws;
@@ -78,16 +116,16 @@ startButton.onclick = async () => {
   startButton.disabled = true;
   hangupButton.disabled = false;
 
-  name = nameInput.value;
+  myName = nameInput.value;
   let roomCode = roomInput.value;
   nameInput.disabled = true;
   roomInput.disabled = true;
 
-  ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${name}`);
+  // ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${myName}`);
 
-  // ws = new WebSocket(`wss://localhost:7878/ws/${roomCode}/${name}`);
+  ws = new WebSocket(`wss://localhost:7878/ws/${roomCode}/${myName}`);
   await waitForOpen();
-  signal(name, {"echo": {"message": "hello"}});
+  signal(myName, {"echo": {"message": "hello"}});
   ws.onmessage = async (event) => {
     let text = event;
     try {
@@ -97,18 +135,18 @@ startButton.onclick = async () => {
       if (payload.peers) {
         payload.peers.names.forEach(async (peerName) => {
           if (peers[peerName]) return;
-          var pc = await createPeerConnection(peerName);
+          var pc = await createPeerConnection(peerName, true);
           offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          signal(peerName, {"offer":{"sender":name, "payload": btoa(JSON.stringify(offer))}});
+          signal(peerName, {"offer":{"sender":myName, "payload": btoa(JSON.stringify(offer))}});
         });
       } else if (payload.offer) {
         if (peers[payload.offer.sender]) {return;}
 
-        var pc = await createPeerConnection(payload.offer.sender);
+        var pc = await createPeerConnection(payload.offer.sender, false);
         await pc.setRemoteDescription(JSON.parse(atob(payload.offer.payload)));
         let answer = await pc.createAnswer();
-        signal(payload.offer.sender, {"answer":{"sender":name, "payload": btoa(JSON.stringify(answer))}});
+        signal(payload.offer.sender, {"answer":{"sender":myName, "payload": btoa(JSON.stringify(answer))}});
         await pc.setLocalDescription(answer);
       } else if(payload.answer) {
         var peerName = payload.answer.sender;
@@ -120,10 +158,12 @@ startButton.onclick = async () => {
           return;
         }
         while(!pc.remoteDescription) {
-          await new Promise(r => setTimeout(r, 100))
+          await new Promise(r => setTimeout(r, 100));
         }
         await pc.addIceCandidate(JSON.parse(atob(payload.candidate.payload)));
         peer.ice.incReceived();
+      } else if(payload.file) {
+        await fileInbound(payload.file);
       }
     } catch (e) {
       console.log("failed to parse event data: ", e);
@@ -165,9 +205,8 @@ async function hangup() {
   }
 };
 
-async function createPeerConnection(peerName) {
+async function createPeerConnection(peerName, dc) {
   console.log(`creating peer connection with ${peerName}`);
-  // pc = new RTCPeerConnection();
   var pc = new RTCPeerConnection({
     iceServers: [
       {
@@ -179,10 +218,31 @@ async function createPeerConnection(peerName) {
         urls: 'stun:stun.l.google.com:19302'
       }
     ]});
-  var peer = new Peer(peerName, pc, new IceStats());
+  
+  var peer = new Peer(peerName, pc, new IceStats(), null, null);
+
+  if (dc) {
+    peer.dataChannel = await createDataChannel(peerName, peer);
+  } else {
+    pc.ondatachannel = async (ev) => {
+      console.log(`Received data channel from ${peerName}`);
+      var dataChannel = ev.channel;
+      peer.dataChannel = dataChannel;
+      dataChannel.onmessage = await onReceiveMessageFromPeer(peerName);
+      dataChannel.onopen = await onDataChannelStateChange(peerName);
+      dataChannel.onclose = await onDataChannelStateChange(peerName);
+      receivedSize = 0;
+      bitrateMax = 0;
+      downloadAnchor.textContent = '';
+      downloadAnchor.removeAttribute('download');
+      if (downloadAnchor.href) {
+        URL.revokeObjectURL(downloadAnchor.href);
+        downloadAnchor.removeAttribute('href');
+      }
+    };
+  }
 
   pc.onicecandidate = async e => {
-
     console.log(`onicecandidate e: ${JSON.stringify()}`);
     if (e.candidate) {
       await waitForOpen();
@@ -191,10 +251,12 @@ async function createPeerConnection(peerName) {
         console.log(`waiting for remote description in onicecandidate: ${pc.remoteDescription}`);
         await new Promise(r => setTimeout(r, 400));
       }
-      signal(peer.name, {"candidate": {"sender": name, "payload": btoa(JSON.stringify(e.candidate))}});
+      signal(peer.name, {"candidate": {"sender": myName, "payload": btoa(JSON.stringify(e.candidate))}});
       peer.ice.incSent();
     }
   };
+
+
   var videoElementId = 'remoteVideo' + peerName;
   var videoElement = document.getElementById(videoElementId);
 
@@ -228,5 +290,253 @@ muteButton.onclick = () => mute();
 function mute() {
   muteButton.innerText = localStream.getAudioTracks()[0].enabled ? "Unmute" : "Mute";
   localStream.getAudioTracks()[0].enabled=!localStream.getAudioTracks()[0].enabled;
+}
+
+/////////////////////////////////////////////////////////
+// Send file
+/////////////////////////////////////////////////////////
+
+const bitrateDiv = document.querySelector('div#bitrate');
+const fileInput = document.querySelector('input#fileInput');
+const abortButton = document.querySelector('button#abortButton');
+const downloadAnchor = document.querySelector('a#download');
+const sendProgress = document.querySelector('progress#sendProgress');
+const receiveProgress = document.querySelector('progress#receiveProgress');
+const statusMessage = document.querySelector('span#status');
+const sendFileButton = document.querySelector('button#sendFile');
+
+
+// TODO encapsulate all these for the file being sent
+let fileSenderPeer;
+let fileReader;
+let receiveBuffer = [];
+let receivedSize = 0;
+
+let bytesPrev = 0;
+let timestampPrev = 0;
+let timestampStart;
+let statsInterval = null;
+let bitrateMax = 0;
+
+sendFileButton.addEventListener('click', () => sendFile());
+fileInput.addEventListener('change', handleFileInputChange, false);
+abortButton.addEventListener('click', () => {
+  if (fileReader && fileReader.readyState === 1) {
+    console.log('Abort read!');
+    fileReader.abort();
+  }
+});
+
+async function fileInbound(fileMessage) {
+  // used for manual negotiation
+  if (fileSenderPeer) {
+    console.error(`already receiving a file, ignoring request: ${JSON.stringify(fileMessage)}`);
+    return;
+  }
+
+  const fileName = fileMessage.fileName;
+  const fileSize = fileMessage.fileSize;
+  const sender = fileMessage.sender;
+
+  fileSenderPeer = peers[sender];
+
+  fileSenderPeer.fileInfo = fileMessage;
+
+  console.log(`Receiving file ${fileName} from ${sender}`);
+
+  receivedSize = 0;
+  bitrateMax = 0;
+  downloadAnchor.textContent = '';
+  downloadAnchor.removeAttribute('download');
+  if (downloadAnchor.href) {
+    URL.revokeObjectURL(downloadAnchor.href);
+    downloadAnchor.removeAttribute('href');
+  }
+
+  if (fileSenderPeer.dataChannel.readyState === 'open') {
+      timestampStart = (new Date()).getTime();
+      timestampPrev = timestampStart;
+      statsInterval = setInterval(displayStats, 500);
+      await displayStats();
+    }
+}
+
+async function handleFileInputChange() {
+  const file = fileInput.files[0];
+  if (!file) {
+    console.log('No file chosen');
+  } else {
+    sendFileButton.disabled = false;
+  }
+}
+
+
+async function sendFile() {
+  const file = fileInput.files[0];
+  console.log(`File is ${[file.name, file.size, file.type, file.lastModified].join(' ')}`);
+
+  for (const [peerName, peer] of Object.entries(peers)) {
+    signal(peerName, {file: {sender: myName, fileName: file.name, fileSize: file.size}});
+    console.log(`sending file ${file.name} to peer ${peerName}`);
+    sendData(peer);
+  }
+}
+
+async function createDataChannel(peerName, peer) {
+  abortButton.disabled = false;
+  sendFileButton.disabled = true;
+
+  console.log(`Creating data channel with ${peerName}`);
+
+  var dataChannel = peer.pc.createDataChannel('channelName');
+  dataChannel.binaryType = 'arraybuffer';
+  console.log(`Created data channel with ${peerName}`);
+  peer.dataChannel = dataChannel;
+
+  dataChannel.onopen = onDataChannelStateChange(peerName);
+  dataChannel.onclose = onDataChannelStateChange(peerName);
+  dataChannel.onmessage = onReceiveMessageFromPeer(peerName)
+  dataChannel.addEventListener('error', () => {
+    if (peer.dataChannel) {
+      console.error('Error in sendChannel:', error);
+      return;
+    }
+    console.log('Error in sendChannel which is already closed:', error);
+  });
+
+  // fileInput.disabled = true;
+  return dataChannel;
+}
+
+function sendData(peer) {
+  fileInput.disabled = true;
+  const file = fileInput.files[0];
+  console.log(`File is ${[file.name, file.size, file.type, file.lastModified].join(' ')}`);
+
+  // Handle 0 size files.
+  statusMessage.textContent = '';
+  downloadAnchor.textContent = '';
+  if (file.size === 0) {
+    bitrateDiv.innerHTML = '';
+    statusMessage.textContent = 'File is empty, please select a non-empty file';
+    closeDataChannels();
+    return;
+  }
+  sendProgress.max = file.size;
+  receiveProgress.max = file.size;
+  const chunkSize = 16384;
+  fileReader = new FileReader();
+  let offset = 0;
+  fileReader.addEventListener('error', error => console.error('Error reading file:', error));
+  fileReader.addEventListener('abort', event => console.log('File reading aborted:', event));
+  fileReader.addEventListener('load', e => {
+    console.log(`FileRead.onload event: ${e}, peer: ${JSON.stringify(peer)}`, e);
+    peer.dataChannel.send(e.target.result);
+    offset += e.target.result.byteLength;
+    sendProgress.value = offset;
+    if (offset < file.size) {
+      readSlice(offset);
+    }
+  });
+  const readSlice = o => {
+    console.log('readSlice ', o);
+    const slice = file.slice(offset, o + chunkSize);
+    fileReader.readAsArrayBuffer(slice);
+  };
+  readSlice(0);
+}
+
+function closeDataChannels() {
+  console.log('Closing data channels');
+
+  for (const [name, peer] of Object.entries(peers)) {
+    if (peer.dataChannel) {
+      peer.dataChannel.close();
+      console.log(`Closed send data channel with label: ${peer.dataChannel.label}`);
+      peer.dataChannel = null;
+    }
+  }
+
+  fileSenderPeer = null;
+  // re-enable the file select
+  fileInput.disabled = false;
+  abortButton.disabled = true;
+  sendFileButton.disabled = false;
+}
+
+async function onReceiveMessageFromPeer(peerName) {
+  return async (event) => {
+    console.log(`Received Message ${event.data.byteLength}`);
+    var peer = peers[peerName];
+    if (!peer) return;
+    while (!peers[peerName].fileInfo) {
+      console.log(`waiting for file signal from peer`);
+      await new Promise(r => setTimeout(r, 200));
+    }
+    var fileInfo = peers[peerName].fileInfo;
+    receiveBuffer.push(event.data);
+    receivedSize += event.data.byteLength;
+    receiveProgress.value = receivedSize;
+
+    if (receivedSize === peer.fileInfo.fileSize) {
+      const received = new Blob(receiveBuffer);
+      receiveBuffer = [];
+
+      downloadAnchor.href = URL.createObjectURL(received);
+      downloadAnchor.download = peer.fileInfo.fileName;
+      downloadAnchor.textContent =
+        `Click to download '${peer.fileInfo.fileName}' (${peer.fileInfo.fileSize} bytes)`;
+      downloadAnchor.style.display = 'block';
+
+      const bitrate = Math.round(receivedSize * 8 /
+        ((new Date()).getTime() - timestampStart));
+      bitrateDiv.innerHTML =
+        `<strong>Average Bitrate:</strong> ${bitrate} kbits/sec (max: ${bitrateMax} kbits/sec)`;
+
+      if (statsInterval) {
+        clearInterval(statsInterval);
+        statsInterval = null;
+      }
+      peers[peerName].fileInfo = null;
+      // closeDataChannels();
+    }
+  }
+}
+async function onDataChannelStateChange(peerName) {
+  return (event) => {
+    console.log(`Received channel state change event: ${JSON.stringify(event)}`);
+    if (peers[peerName] && peers[peerName].dataChannel) {
+      const readyState = peers[peerName].dataChannel.readyState;
+      console.log(`data channel state is: ${readyState}`);
+    }
+  }
+}
+
+// display bitrate statistics.
+async function displayStats() {
+  if (remoteConnection && remoteConnection.iceConnectionState === 'connected') {
+    const stats = await remoteConnection.getStats();
+    let activeCandidatePair;
+    stats.forEach(report => {
+      if (report.type === 'transport') {
+        activeCandidatePair = stats.get(report.selectedCandidatePairId);
+      }
+    });
+    if (activeCandidatePair) {
+      if (timestampPrev === activeCandidatePair.timestamp) {
+        return;
+      }
+      // calculate current bitrate
+      const bytesNow = activeCandidatePair.bytesReceived;
+      const bitrate = Math.round((bytesNow - bytesPrev) * 8 /
+        (activeCandidatePair.timestamp - timestampPrev));
+      bitrateDiv.innerHTML = `<strong>Current Bitrate:</strong> ${bitrate} kbits/sec`;
+      timestampPrev = activeCandidatePair.timestamp;
+      bytesPrev = bytesNow;
+      if (bitrate > bitrateMax) {
+        bitrateMax = bitrate;
+      }
+    }
+  }
 }
 </script>

@@ -76,6 +76,13 @@ pub enum MessagePayload {
     Candidate{sender: String, payload: String},
     Peers{names: Vec<String>},
     Echo{message: String},
+    File{
+        sender: String,
+        #[serde(rename = "fileName")]
+        file_name: String,
+        #[serde(rename = "fileSize")]
+        file_size: i64,
+    },
 }
 
 // user_agent: Option<TypedHeader<headers::UserAgent>>,
