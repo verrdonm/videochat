@@ -61,6 +61,9 @@ div.progress div.label {
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
 
+window.__WEBRTC_DEBUG=true;
+window.__WEBRTC_TRACE_LEVEL=4;
+
 const IceStats = class {
   constructor() {
     this.sent = 0;
@@ -100,7 +103,6 @@ const roomInput = document.getElementById('room');
 
 let peers = {};
 let myName;
-let offer;
 let localStream;
 let ws;
 
@@ -121,9 +123,7 @@ startButton.onclick = async () => {
   nameInput.disabled = true;
   roomInput.disabled = true;
 
-  // ws = new WebSocket(`wss://meet.verrdon.com/ws/${roomCode}/${myName}`);
-
-  ws = new WebSocket(`wss://localhost:7878/ws/${roomCode}/${myName}`);
+  ws = new WebSocket(`/ws/${roomCode}/${myName}`);
   await waitForOpen();
   signal(myName, {"echo": {"message": "hello"}});
   ws.onmessage = async (event) => {
@@ -136,7 +136,7 @@ startButton.onclick = async () => {
         payload.peers.names.forEach(async (peerName) => {
           if (peers[peerName]) return;
           var pc = await createPeerConnection(peerName, true);
-          offer = await pc.createOffer();
+          var offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           signal(peerName, {"offer":{"sender":myName, "payload": btoa(JSON.stringify(offer))}});
         });
@@ -155,9 +155,11 @@ startButton.onclick = async () => {
         var peer = peers[payload.candidate.sender];
         var pc = peer.pc;
         if (!pc) {
+          console.log(`Received candidate from peer ${payload.candidate.sender} with no connection`);
           return;
         }
         while(!pc.remoteDescription) {
+          console.log(`Waiting for remote description from ${payload.candidate.sender}`);
           await new Promise(r => setTimeout(r, 100));
         }
         await pc.addIceCandidate(JSON.parse(atob(payload.candidate.payload)));
@@ -243,12 +245,12 @@ async function createPeerConnection(peerName, dc) {
   }
 
   pc.onicecandidate = async e => {
-    console.log(`onicecandidate e: ${JSON.stringify()}`);
+    console.log(`${peerName} onicecandidate e: ${JSON.stringify()}`);
     if (e.candidate) {
       await waitForOpen();
       console.log(JSON.stringify(pc));
       while(!pc.remoteDescription) {
-        console.log(`waiting for remote description in onicecandidate: ${pc.remoteDescription}`);
+        console.log(`waiting for remote description from ${peerName} in onicecandidate: ${pc.remoteDescription}`);
         await new Promise(r => setTimeout(r, 400));
       }
       signal(peer.name, {"candidate": {"sender": myName, "payload": btoa(JSON.stringify(e.candidate))}});
@@ -356,8 +358,8 @@ async function fileInbound(fileMessage) {
   if (fileSenderPeer.dataChannel.readyState === 'open') {
       timestampStart = (new Date()).getTime();
       timestampPrev = timestampStart;
-      statsInterval = setInterval(displayStats, 500);
-      await displayStats();
+      statsInterval = setInterval(displayStats(sender, peers[sender]), 500);
+      await displayStats(sender, peers[sender])();
     }
 }
 
@@ -513,28 +515,30 @@ async function onDataChannelStateChange(peerName) {
 }
 
 // display bitrate statistics.
-async function displayStats() {
-  if (remoteConnection && remoteConnection.iceConnectionState === 'connected') {
-    const stats = await remoteConnection.getStats();
-    let activeCandidatePair;
-    stats.forEach(report => {
-      if (report.type === 'transport') {
-        activeCandidatePair = stats.get(report.selectedCandidatePairId);
-      }
-    });
-    if (activeCandidatePair) {
-      if (timestampPrev === activeCandidatePair.timestamp) {
-        return;
-      }
-      // calculate current bitrate
-      const bytesNow = activeCandidatePair.bytesReceived;
-      const bitrate = Math.round((bytesNow - bytesPrev) * 8 /
-        (activeCandidatePair.timestamp - timestampPrev));
-      bitrateDiv.innerHTML = `<strong>Current Bitrate:</strong> ${bitrate} kbits/sec`;
-      timestampPrev = activeCandidatePair.timestamp;
-      bytesPrev = bytesNow;
-      if (bitrate > bitrateMax) {
-        bitrateMax = bitrate;
+function displayStats(peerName, peer) {
+  return async () => {
+    if (peer.pc && peer.pc.iceConnectionState === 'connected') {
+      const stats = await peer.pc.getStats();
+      let activeCandidatePair;
+      stats.forEach(report => {
+        if (report.type === 'transport') {
+          activeCandidatePair = stats.get(report.selectedCandidatePairId);
+        }
+      });
+      if (activeCandidatePair) {
+        if (timestampPrev === activeCandidatePair.timestamp) {
+          return;
+        }
+        // calculate current bitrate
+        const bytesNow = activeCandidatePair.bytesReceived;
+        const bitrate = Math.round((bytesNow - bytesPrev) * 8 /
+          (activeCandidatePair.timestamp - timestampPrev));
+        bitrateDiv.innerHTML = `<strong>Current Bitrate:</strong> ${bitrate} kbits/sec`;
+        timestampPrev = activeCandidatePair.timestamp;
+        bytesPrev = bytesNow;
+        if (bitrate > bitrateMax) {
+          bitrateMax = bitrate;
+        }
       }
     }
   }
