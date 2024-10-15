@@ -48,12 +48,13 @@ div.progress div.label {
       <progress id="receiveProgress" max="0" value="0"></progress>
     </div>
 
+    <div id="chat"></div>
+    <button id="chatButton">Chat</button>
+
     <div id="bitrate"></div>
     <a id="download"></a>
     <span id="status"></span>
   </div>
-
-  <div id="chatbox"></div>
 
 </div>
 
@@ -89,9 +90,19 @@ const Peer = class {
   }
 }
 
+const ChatMessage = class {
+  constructor(sender, msg) {
+    this.sender = sender;
+    this.msg = msg;
+    this.timestamp = Date.now();
+  }
+}
+
 const startButton = document.getElementById('startButton');
 const hangupButton = document.getElementById('hangupButton');
 const muteButton = document.getElementById('muteButton');
+const chatButton = document.getElementById('chatButton');
+const chatBox = document.getElementById('chat');
 
 hangupButton.disabled = true;
 
@@ -230,7 +241,8 @@ async function createPeerConnection(peerName, dc) {
       console.log(`Received data channel from ${peerName}`);
       var dataChannel = ev.channel;
       peer.dataChannel = dataChannel;
-      dataChannel.onmessage = await onReceiveMessageFromPeer(peerName);
+      // dataChannel.onmessage = await onReceiveMessageFromPeer(peerName);
+      dataChannel.onmessage = onReceiveChatMessage;
       dataChannel.onopen = await onDataChannelStateChange(peerName);
       dataChannel.onclose = await onDataChannelStateChange(peerName);
       receivedSize = 0;
@@ -397,7 +409,8 @@ async function createDataChannel(peerName, peer) {
 
   dataChannel.onopen = onDataChannelStateChange(peerName);
   dataChannel.onclose = onDataChannelStateChange(peerName);
-  dataChannel.onmessage = onReceiveMessageFromPeer(peerName)
+  // dataChannel.onmessage = onReceiveMessageFromPeer(peerName)
+  dataChannel.onmessage = onReceiveChatMessage;
   dataChannel.addEventListener('error', () => {
     if (peer.dataChannel) {
       console.error('Error in sendChannel:', error);
@@ -448,6 +461,21 @@ function sendData(peer) {
   readSlice(0);
 }
 
+chatButton.onclick = sendChat;
+
+function sendChat() {
+  var chatMsg = new ChatMessage(myName, "it is chat");
+  var chatJson = JSON.stringify(chatMsg);
+  console.log(`sending chat ${chatJson}`);
+  for (const [name, peer] of Object.entries(peers)) {
+    console.log(`${JSON.stringify(peer)}`);
+    // if(!peer || !peer.dataChannel) return;
+
+    peer.dataChannel.send(chatJson);
+  }
+  appendChatMessage(chatMsg);
+}
+
 function closeDataChannels() {
   console.log('Closing data channels');
 
@@ -466,7 +494,7 @@ function closeDataChannels() {
   sendFileButton.disabled = false;
 }
 
-async function onReceiveMessageFromPeer(peerName) {
+function onReceiveMessageFromPeer(peerName) {
   return async (event) => {
     console.log(`Received Message ${event.data.byteLength}`);
     var peer = peers[peerName];
@@ -500,11 +528,21 @@ async function onReceiveMessageFromPeer(peerName) {
         statsInterval = null;
       }
       peers[peerName].fileInfo = null;
-      // closeDataChannels();
     }
   }
 }
-async function onDataChannelStateChange(peerName) {
+
+function onReceiveChatMessage(event) {
+  console.log(`${JSON.stringify(event.data)}`);
+  var chatMessage = JSON.parse(event.data);
+  appendChatMessage(chatMessage);
+}
+
+function appendChatMessage(msg) {
+  chatBox.innerHTML += `<p>[${msg.timestamp}] ${msg.sender}: ${msg.msg}</p>`;
+}
+
+function onDataChannelStateChange(peerName) {
   return (event) => {
     console.log(`Received channel state change event: ${JSON.stringify(event)}`);
     if (peers[peerName] && peers[peerName].dataChannel) {
