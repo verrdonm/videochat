@@ -1,0 +1,4 @@
+[general]
+dirs = ["resources/templates"]
+# Unless you add a `-` in a block, whitespace characters won't be trimmed.
+whitespace = "preserve"

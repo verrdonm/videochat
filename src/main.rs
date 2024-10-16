@@ -8,7 +8,7 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use askama_axum::Template;
-use tower_http::{classify::ServerErrorsFailureClass, trace::TraceLayer};
+use tower_http::{classify::ServerErrorsFailureClass, services::ServeDir, trace::TraceLayer};
 use tracing::{info_span, Span};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
@@ -60,9 +60,14 @@ async fn main() {
         room_service: Arc::new(P2pRoomService::new())
     };
     tracing::info!("Starting...");
+    let static_content_path = std::env::current_dir().unwrap();
     let app = Router::new()
         .route("/", get(root))
         .route("/ws/:room/:name", get(handlers::ws_handler))
+        .nest_service(
+            "/static",
+            ServeDir::new(format!("{}/resources/static", static_content_path.to_str().unwrap())),
+        )
         .with_state(app_state)
         .layer(
             TraceLayer::new_for_http()

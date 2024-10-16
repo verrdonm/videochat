@@ -1,0 +1,6 @@
+{
+    "compilerOptions": {
+        "outDir": "./resources/static",
+        "baseUrl": "./resources/ts"
+    } 
+}

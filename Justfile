@@ -4,8 +4,11 @@ alias r := run
 alias d := deploy
 alias db := docker-build
 
-run:
+run: ts
     cargo run
+
+ts:
+    tsc --build ./tsconfig.json
 
 docker-build:
     docker build -t verrdon/meet:deploy-latest .

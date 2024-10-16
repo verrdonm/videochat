@@ -1,0 +1,69 @@
+
+<style>
+textarea {
+    width: 500px;
+    min-height: 75px;
+}
+
+progress {
+  width: calc(100% - 8.5em);
+}
+
+div.progress, div#bitrate {
+  margin: 0 0 1em 0;
+}
+
+div.progress div.label {
+  display: inline-block;
+  font-weight: 400;
+  width: 8.2em;
+}
+</style>
+
+<div id="container">
+  <div id="remotePeers"></div>
+  <video id="localVideo" playsinline autoplay muted style="transform: scale(-1, 1); -webkit-transform: scale(-1, 1);"></video>
+  <div class="box">
+    <span>name<input type="text" name="Name" id="name"/></span>
+    <span>room<input type="text" name="Room" id="room" value="r1"/></span>
+    <button id="startButton">Join</button>
+    <button id="muteButton">Mute</button>
+    <button id="hangupButton">Hang Up</button>
+  </div>
+  <div class="sendFile">
+    <!-- <form id="fileInfo"> -->
+      <input type="file" id="fileInput"/>
+    <!-- </form> -->
+    <button disabled id="sendFile">Send</button>
+    <button disabled id="abortButton">Abort</button>
+
+
+    <div class="progress">
+      <div class="label">Send progress: </div>
+      <progress id="sendProgress" max="0" value="0"></progress>
+    </div>
+
+    <div class="progress">
+      <div class="label">Receive progress: </div>
+      <progress id="receiveProgress" max="0" value="0"></progress>
+    </div>
+
+    <div id="chat"></div>
+    <button id="chatButton">Chat</button>
+
+    <div id="bitrate"></div>
+    <a id="download"></a>
+    <span id="status"></span>
+  </div>
+
+</div>
+
+
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+<script src="/static/old.js"></script>
+<script>
+
+window.__WEBRTC_DEBUG=true;
+window.__WEBRTC_TRACE_LEVEL=4;
+
+</script>
