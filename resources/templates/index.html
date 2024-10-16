@@ -60,10 +60,14 @@ div.progress div.label {
 
 
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
-<script src="/static/old.js"></script>
-<script>
+<!-- <script src="/static/session.js" type="module"></script> -->
+<script type="module">
+import WebRTCSession from '/static/session.js';
 
 window.__WEBRTC_DEBUG=true;
 window.__WEBRTC_TRACE_LEVEL=4;
+
+let session = new WebRTCSession();
+
 
 </script>

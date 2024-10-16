@@ -1,3 +1,5 @@
+export {ChatMessage, IceStats, Peer};
+
 // Server message types
 
 // enum PayloadType {
@@ -61,20 +63,20 @@ class IceStats {
     }
   }
   
-  class Peer {
+ class Peer {
     name: string;
     pc: RTCPeerConnection;
     ice: IceStats;
     dataChannel: RTCDataChannel;
-    fileInfo: Object;
-    constructor(name: string, pc: RTCPeerConnection, ice: IceStats, dataChannel: RTCDataChannel, fileInfo: Object) {
+    fileInfo: FilePayload;
+    constructor(name: string, pc: RTCPeerConnection, ice: IceStats, dataChannel: RTCDataChannel, fileInfo: FilePayload) {
       this.name = name;
       this.pc = pc;
       this.ice = ice;
       this.dataChannel = dataChannel;
       this.fileInfo = fileInfo;
     }
-  }
+}
   
 class ChatMessage {
     sender: string;
@@ -85,4 +87,4 @@ class ChatMessage {
       this.msg = msg;
       this.timestamp = Date.now();
     }
-  }
+}

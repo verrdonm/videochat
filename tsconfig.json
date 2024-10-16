@@ -1,6 +1,7 @@
 {
     "compilerOptions": {
         "outDir": "./resources/static",
-        "baseUrl": "./resources/ts"
+        "baseUrl": "./resources/ts",
+        "target": "ES2023"
     } 
 }
